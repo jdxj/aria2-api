@@ -287,6 +287,36 @@ impl Client {
 
         unwrap_result_for_string(res)
     }
+
+    pub async fn pause(
+        &mut self,
+        secret: Option<&str>,
+        gid: &str,
+    ) -> Result<String, Box<dyn Error>> {
+        let mut params_array = new_params(secret);
+        params_array.push(JsonValue::String(gid.to_string()));
+        let params = JsonValue::Array(params_array);
+
+        let req = RequestObject::new(Method::Pause, params, Some(self.next_id()));
+        let res = self.call(req).await?.expect(MUST_RESPONSE);
+
+        unwrap_result_for_string(res)
+    }
+
+    pub async fn unpause(
+        &mut self,
+        secret: Option<&str>,
+        gid: &str,
+    ) -> Result<String, Box<dyn Error>> {
+        let mut params_array = new_params(secret);
+        params_array.push(JsonValue::String(gid.to_string()));
+        let params = JsonValue::Array(params_array);
+
+        let req = RequestObject::new(Method::Unpause, params, Some(self.next_id()));
+        let res = self.call(req).await?.expect(MUST_RESPONSE);
+
+        unwrap_result_for_string(res)
+    }
 }
 
 fn new_params(secret: Option<&str>) -> Vec<serde_json::Value> {
