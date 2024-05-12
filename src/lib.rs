@@ -1,13 +1,13 @@
 use futures_util::stream::{SplitSink, SplitStream};
-use futures_util::{future, pin_mut, SinkExt, StreamExt};
-use log::{error, info, trace};
+use futures_util::{SinkExt, StreamExt};
+use log::{debug, error, info, trace};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::atomic::AtomicU64;
-use std::sync::{atomic, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use strum::IntoStaticStr;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite::Message;
@@ -23,16 +23,23 @@ pub enum Method {
     Aria2SaveSession,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct Version {
+    pub version: String,
+    #[serde(rename = "enabledFeatures")]
+    pub enabled_features: Vec<String>,
+}
+
 #[derive(Serialize, Debug)]
-struct RequestObject<'a> {
+struct RequestObject {
     jsonrpc: &'static str,
     method: &'static str,
-    params: &'a Vec<u8>,
+    params: JsonValue,
     id: Option<String>,
 }
 
-impl<'a> RequestObject<'a> {
-    fn new(method: Method, params: &'a Vec<u8>, id: Option<String>) -> RequestObject<'a> {
+impl RequestObject {
+    fn new(method: Method, params: JsonValue, id: Option<String>) -> RequestObject {
         RequestObject {
             jsonrpc: "2.0",
             method: method.into(),
@@ -57,7 +64,7 @@ impl<'a> RequestObject<'a> {
 
 #[derive(Deserialize, Debug)]
 pub struct ResponseObject {
-    result: Vec<u8>,
+    result: JsonValue,
     error: Option<ErrorObject>,
 
     jsonrpc: String,
@@ -104,6 +111,8 @@ async fn read_message(
     mut reader: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     id_map: Arc<Mutex<HashMap<String, oneshot::Sender<ResponseObject>>>>,
 ) {
+    trace!("start read message");
+
     while let Some(message) = reader.next().await {
         let message = message.unwrap();
         if let Message::Text(data) = message {
@@ -132,10 +141,7 @@ async fn read_message(
 }
 
 impl Client {
-    async fn call<'a>(
-        &mut self,
-        req: RequestObject<'a>,
-    ) -> Result<Option<ResponseObject>, Box<dyn Error>> {
+    async fn call(&mut self, req: RequestObject) -> Result<Option<ResponseObject>, Box<dyn Error>> {
         let (tx, rx) = oneshot::channel();
         // 有 id, 说明是 rpc 请求
         // 先注册消息回调通知, 然后再发送消息
@@ -145,6 +151,8 @@ impl Client {
         }
 
         let data = serde_json::to_string(&req)?;
+        debug!("encode request object: {:?}", data);
+
         if let Err(e) = self.write.send(Message::Text(data)).await {
             // 删除消息回调通知
             if req.is_request() {
@@ -168,6 +176,7 @@ impl Client {
 #[cfg(test)]
 mod test {
     use super::*;
+    use log::debug;
     use std::env;
     use std::time::Duration;
     use tokio::sync::oneshot;
@@ -188,16 +197,35 @@ mod test {
         println!("{:?}", <Method as Into<&str>>::into(Method::Aria2AddUri))
     }
 
-    #[test]
-    fn test_oneshot() {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-    }
-
     #[tokio::test]
     async fn test_new_client() {
         setup();
 
         let client = new_client().await;
         sleep(Duration::from_secs(10)).await;
+    }
+
+    fn new_request_object() -> RequestObject {
+        let secret = env::var("ARIA2_SECRET").unwrap();
+        let token = "token:".to_string() + &secret;
+        let mut params_array = Vec::new();
+        params_array.push(token);
+        let params = serde_json::json!(params_array);
+
+        let id = Some("1".to_string());
+
+        RequestObject::new(Method::Aria2GetVersion, params, id)
+    }
+
+    #[tokio::test]
+    async fn test_call() {
+        setup();
+
+        let mut client = new_client().await;
+        let req = new_request_object();
+        let res = client.call(req).await.unwrap().unwrap();
+
+        let version = serde_json::from_value::<Version>(res.result).unwrap();
+        println!("version: {:?}", version)
     }
 }
