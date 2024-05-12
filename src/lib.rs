@@ -410,6 +410,19 @@ impl Client {
             panic!("{}", MUST_RESULT)
         }
     }
+
+    pub async fn purge_download_result(
+        &mut self,
+        secret: Option<&str>,
+    ) -> Result<String, Box<dyn Error>> {
+        let params_array = new_params(secret);
+        let params = JsonValue::Array(params_array);
+
+        let req = RequestObject::new(Method::PurgeDownloadResult, params, Some(self.next_id()));
+        let res = self.call(req).await?.expect(MUST_RESPONSE);
+
+        unwrap_result_for_string(res)
+    }
 }
 
 fn new_params(secret: Option<&str>) -> Vec<serde_json::Value> {
@@ -574,6 +587,26 @@ mod test {
         match res {
             Ok(gid) => {
                 info!("gid: {:?}", gid);
+            }
+            Err(e) => {
+                error!("err: {:?}", e)
+            }
+        }
+
+        sleep(Duration::from_secs(500)).await;
+    }
+
+    #[tokio::test]
+    async fn test_purge_download_result() {
+        setup();
+
+        let mut client = new_client().await;
+
+        let secret = env::var("ARIA2_SECRET").unwrap();
+        let res = client.purge_download_result(Some(&secret)).await;
+        match res {
+            Ok(result) => {
+                info!("result: {:?}", result);
             }
             Err(e) => {
                 error!("err: {:?}", e)
