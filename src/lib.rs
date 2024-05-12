@@ -12,6 +12,7 @@ use strum::IntoStaticStr;
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
+use tokio::time::{self, Duration};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
@@ -72,7 +73,7 @@ pub struct ResponseObject {
     jsonrpc: String,
     id: Option<String>,
     method: Option<String>,
-    params: serde_json::Value,
+    params: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -97,7 +98,6 @@ impl Error for ErrorObject {}
 pub struct Client {
     next_id: AtomicU64,
     write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
-    // todo: 定时清理, 否则内存泄漏?
     id_map: Arc<Mutex<HashMap<String, oneshot::Sender<ResponseObject>>>>,
     notify_tx: broadcast::Sender<ResponseObject>,
 }
@@ -141,11 +141,10 @@ async fn read_message(
             let res = match serde_json::from_str::<ResponseObject>(&data) {
                 Ok(v) => v,
                 Err(e) => {
-                    warn!("parse ResponseObject err: {:?}, data: {:?}", e, data);
+                    error!("parse ResponseObject err: {:?}, data: {:?}", e, data);
                     continue;
                 }
             };
-            // todo: 可能是通知, 没有 id
             let id = &res.id;
             match id {
                 // 有值, 是 rpc 响应
@@ -158,6 +157,7 @@ async fn read_message(
                         error!("send ResponseObject err: {:?}", e);
                     }
                 }
+                // 没值, 是通知
                 _ => {
                     // 服务端发来的通知发送到 notification
                     if let Err(e) = notify_tx.send(res) {
@@ -193,9 +193,18 @@ impl Client {
 
         // 发送成功, 如果是 rpc 请求, 那么需要等待响应
         if req.is_request() {
-            // todo: 增加 read 超时
-            let res = rx.await?;
-            Ok(Some(res))
+            match time::timeout(Duration::from_secs(10), rx).await {
+                Err(e) => {
+                    // 超时, 删除消息回调通知
+                    let mut mg = self.id_map.lock().unwrap();
+                    mg.remove(req.id());
+                    Err(Box::new(e))
+                }
+                Ok(result) => {
+                    let res = result?;
+                    Ok(Some(res))
+                }
+            }
         } else {
             // 是通知
             Ok(None)
