@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use strum::IntoStaticStr;
 use tokio::net::TcpStream;
+use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
@@ -63,16 +64,18 @@ impl RequestObject {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct ResponseObject {
     result: Option<JsonValue>,
     error: Option<ErrorObject>,
 
     jsonrpc: String,
     id: Option<String>,
+    method: Option<String>,
+    params: serde_json::Value,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct ErrorObject {
     pub code: i16,
     pub message: Option<String>,
@@ -94,9 +97,9 @@ impl Error for ErrorObject {}
 pub struct Client {
     next_id: AtomicU64,
     write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
-    // read: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
-    // 定时清理, 否则内存泄漏?
+    // todo: 定时清理, 否则内存泄漏?
     id_map: Arc<Mutex<HashMap<String, oneshot::Sender<ResponseObject>>>>,
+    notify_tx: broadcast::Sender<ResponseObject>,
 }
 
 impl Client {
@@ -105,17 +108,21 @@ impl Client {
         let (ws_stream, resp) = connect_async(url).await.unwrap();
         trace!("websocket response header: {:?}", resp.headers());
 
-        // split
+        // split stream
         let (write, read) = ws_stream.split();
         let id_map = Arc::new(Mutex::new(
             HashMap::<String, oneshot::Sender<ResponseObject>>::new(),
         ));
-        tokio::spawn(read_message(read, id_map.clone()));
+
+        // notification channel
+        let (notify_tx, notify_rx) = broadcast::channel(100);
+        tokio::spawn(read_message(read, id_map.clone(), notify_tx.clone()));
 
         Client {
             next_id: AtomicU64::new(1),
             write,
             id_map,
+            notify_tx,
         }
     }
 }
@@ -123,6 +130,7 @@ impl Client {
 async fn read_message(
     mut reader: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     id_map: Arc<Mutex<HashMap<String, oneshot::Sender<ResponseObject>>>>,
+    notify_tx: broadcast::Sender<ResponseObject>,
 ) {
     trace!("start read message");
 
@@ -130,10 +138,15 @@ async fn read_message(
         // todo: 发生网络, 直接 panic 不太好?
         let message = message.unwrap();
         if let Message::Text(data) = message {
-            // todo: 解析错误, 直接 panic 不太好?
-            let result = serde_json::from_str::<ResponseObject>(&data).unwrap();
+            let res = match serde_json::from_str::<ResponseObject>(&data) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("parse ResponseObject err: {:?}, data: {:?}", e, data);
+                    continue;
+                }
+            };
             // todo: 可能是通知, 没有 id
-            let id = &result.id;
+            let id = &res.id;
             match id {
                 // 有值, 是 rpc 响应
                 Some(id) => {
@@ -141,14 +154,15 @@ async fn read_message(
                         let mut mg = id_map.lock().unwrap();
                         mg.remove(id).expect("oneshot sender not found")
                     };
-                    if let Err(e) = tx.send(result) {
+                    if let Err(e) = tx.send(res) {
                         error!("send ResponseObject err: {:?}", e);
                     }
                 }
-                // 服务端发来的通知
                 _ => {
-                    // todo: 发送到 channel
-                    warn!("通知未发送到 channel: {:?}", result)
+                    // 服务端发来的通知发送到 notification
+                    if let Err(e) = notify_tx.send(res) {
+                        error!("try send notification err: {:?}", e)
+                    }
                 }
             }
         }
@@ -179,12 +193,18 @@ impl Client {
 
         // 发送成功, 如果是 rpc 请求, 那么需要等待响应
         if req.is_request() {
+            // todo: 增加 read 超时
             let res = rx.await?;
             Ok(Some(res))
         } else {
             // 是通知
             Ok(None)
         }
+    }
+
+    /// 如果想接收服务端的 notification 请尽早调用, 否则会丢失消息.
+    pub fn notification_receiver(&self) -> broadcast::Receiver<ResponseObject> {
+        self.notify_tx.subscribe()
     }
 
     pub async fn get_version(&mut self, secret: Option<&str>) -> Result<Version, Box<dyn Error>> {
@@ -324,6 +344,22 @@ mod test {
 
         let mut client = new_client().await;
 
+        // 打印通知
+        let mut notification = client.notification_receiver();
+        tokio::spawn(async move {
+            loop {
+                match notification.recv().await {
+                    Ok(res) => {
+                        info!("response: {:?}", res)
+                    }
+                    Err(e) => {
+                        error!("err: {:?}", e)
+                    }
+                }
+            }
+        });
+
+        // 添加下载请求
         let secret = env::var("ARIA2_SECRET").unwrap();
         let uri = "https://github.com/sxyazi/yazi/releases/download/v0.2.5/yazi-x86_64-unknown-linux-gnu.zip";
         let res = client.add_uri(Some(&secret), uri).await;
