@@ -16,14 +16,29 @@ use tokio::time::{self, Duration};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
+static MUST_RESPONSE: &'static str = "request must had response";
+static MUST_RESULT: &'static str = "neither result nor err";
+
 #[derive(IntoStaticStr)]
 pub enum Method {
     #[strum(serialize = "aria2.addUri")]
     AddUri,
+    #[strum(serialize = "aria2.remove")]
+    Remove,
+    #[strum(serialize = "aria2.pause")]
+    Pause,
+    #[strum(serialize = "aria2.unpause")]
+    Unpause,
+
+    #[strum(serialize = "aria2.tellStatus")]
+    TellStatus,
+    #[strum(serialize = "aria2.getGlobalStat")]
+    GetGlobalStat,
     #[strum(serialize = "aria2.getVersion")]
     GetVersion,
-    #[strum(serialize = "aria2.saveSession")]
-    SaveSession,
+
+    #[strum(serialize = "aria2.purgeDownloadResult")]
+    PurgeDownloadResult,
 }
 
 #[derive(Deserialize, Debug)]
@@ -115,7 +130,7 @@ impl Client {
         ));
 
         // notification channel
-        let (notify_tx, notify_rx) = broadcast::channel(100);
+        let (notify_tx, _) = broadcast::channel(100);
         tokio::spawn(read_message(read, id_map.clone(), notify_tx.clone()));
 
         Client {
@@ -216,17 +231,16 @@ impl Client {
         self.notify_tx.subscribe()
     }
 
-    pub async fn get_version(&mut self, secret: Option<&str>) -> Result<Version, Box<dyn Error>> {
-        let mut params_array = Vec::new();
-        if let Some(sec) = secret {
-            let token = "token:".to_string() + sec;
-            params_array.push(token);
-        }
+    fn next_id(&mut self) -> String {
+        self.next_id.fetch_add(1, Ordering::Relaxed).to_string()
+    }
 
-        let params = serde_json::json!(params_array);
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
-        let req = RequestObject::new(Method::GetVersion, params, Some(id));
-        let res = self.call(req).await?.expect("request must had response");
+    pub async fn get_version(&mut self, secret: Option<&str>) -> Result<Version, Box<dyn Error>> {
+        let params_array = new_params(secret);
+        let params = JsonValue::Array(params_array);
+
+        let req = RequestObject::new(Method::GetVersion, params, Some(self.next_id()));
+        let res = self.call(req).await?.expect(MUST_RESPONSE);
 
         // 解析响应结果
         if let Some(result) = res.result {
@@ -235,7 +249,7 @@ impl Client {
         } else if let Some(err) = res.error {
             Err(Box::new(err))
         } else {
-            panic!("neither result nor err")
+            panic!("{}", MUST_RESULT)
         }
     }
 
@@ -244,32 +258,54 @@ impl Client {
         secret: Option<&str>,
         uri: &str,
     ) -> Result<String, Box<dyn Error>> {
-        let mut params_array = Vec::new();
-        // 添加 token
-        if let Some(sec) = secret {
-            let token = "token:".to_string() + sec;
-            params_array.push(serde_json::Value::String(token));
-        }
-        // 添加 uri, 目前每次只添加一个 uri
+        // 添加 uris, 目前每次调用只添加一个 uri
         let mut uris = Vec::new();
-        uris.push(serde_json::Value::String(uri.to_string()));
-        let uris = serde_json::Value::Array(uris);
-        params_array.push(uris);
+        uris.push(JsonValue::String(uri.to_string()));
+        // 添加 token
+        let mut params_array = new_params(secret);
+        params_array.push(JsonValue::Array(uris));
+        let params = JsonValue::Array(params_array);
 
-        let params = serde_json::json!(params_array);
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
-        let req = RequestObject::new(Method::AddUri, params, Some(id));
-        let res = self.call(req).await?.expect("request must had response");
+        let req = RequestObject::new(Method::AddUri, params, Some(self.next_id()));
+        let res = self.call(req).await?.expect(MUST_RESPONSE);
 
         // 解析响应结果
-        if let Some(result) = res.result {
-            let gid = serde_json::from_value::<String>(result)?;
-            Ok(gid)
-        } else if let Some(err) = res.error {
-            Err(Box::new(err))
-        } else {
-            panic!("neither string nor err")
-        }
+        unwrap_result_for_string(res)
+    }
+
+    pub async fn remove(
+        &mut self,
+        secret: Option<&str>,
+        gid: &str,
+    ) -> Result<String, Box<dyn Error>> {
+        let mut params_array = new_params(secret);
+        params_array.push(JsonValue::String(gid.to_string()));
+        let params = JsonValue::Array(params_array);
+
+        let req = RequestObject::new(Method::Remove, params, Some(self.next_id()));
+        let res = self.call(req).await?.expect(MUST_RESPONSE);
+
+        unwrap_result_for_string(res)
+    }
+}
+
+fn new_params(secret: Option<&str>) -> Vec<serde_json::Value> {
+    let mut params_array = Vec::new();
+    if let Some(sec) = secret {
+        let token = "token:".to_string() + sec;
+        params_array.push(JsonValue::String(token));
+    }
+    params_array
+}
+
+fn unwrap_result_for_string(res: ResponseObject) -> Result<String, Box<dyn Error>> {
+    if let Some(result) = res.result {
+        let gid = serde_json::from_value::<String>(result)?;
+        Ok(gid)
+    } else if let Some(err) = res.error {
+        Err(Box::new(err))
+    } else {
+        panic!("{}", MUST_RESULT)
     }
 }
 
@@ -281,10 +317,10 @@ mod test {
     use std::time::Duration;
     use tokio::sync::oneshot;
     use tokio::time::sleep;
-    use tokio_tungstenite::tungstenite::client;
 
     fn setup() {
-        env::set_var("RUST_LOG", "trace");
+        // env::set_var("RUST_LOG", "trace");
+        env::set_var("RUST_LOG", "aria2_api=trace");
         pretty_env_logger::init()
     }
 
@@ -372,6 +408,26 @@ mod test {
         let secret = env::var("ARIA2_SECRET").unwrap();
         let uri = "https://github.com/sxyazi/yazi/releases/download/v0.2.5/yazi-x86_64-unknown-linux-gnu.zip";
         let res = client.add_uri(Some(&secret), uri).await;
+        match res {
+            Ok(gid) => {
+                info!("gid: {:?}", gid);
+            }
+            Err(e) => {
+                error!("err: {:?}", e)
+            }
+        }
+
+        sleep(Duration::from_secs(500)).await;
+    }
+
+    #[tokio::test]
+    async fn test_remove() {
+        setup();
+
+        let mut client = new_client().await;
+
+        let secret = env::var("ARIA2_SECRET").unwrap();
+        let res = client.remove(Some(&secret), "2089b05ecca3d829").await;
         match res {
             Ok(gid) => {
                 info!("gid: {:?}", gid);
