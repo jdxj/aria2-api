@@ -40,6 +40,19 @@ impl<'a> RequestObject<'a> {
             id,
         }
     }
+
+    fn is_request(&self) -> bool {
+        if let Some(id) = &self.id {
+            if id.len() > 0 {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn id(&self) -> &str {
+        self.id.as_deref().unwrap()
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -62,7 +75,7 @@ pub struct Client {
     next_id: AtomicU64,
     write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
     // read: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
-    // 定时清理, 否则内存泄漏
+    // 定时清理, 否则内存泄漏?
     id_map: Arc<Mutex<HashMap<String, oneshot::Sender<ResponseObject>>>>,
 }
 
@@ -105,7 +118,7 @@ async fn read_message(
                         mg.remove(id).unwrap()
                     };
                     if let Err(e) = tx.send(result) {
-                        error!("send err: {:?}", e);
+                        error!("send ResponseObject err: {:?}", e);
                     }
                 }
                 // 服务端发来的通知
@@ -126,24 +139,23 @@ impl Client {
         let (tx, rx) = oneshot::channel();
         // 有 id, 说明是 rpc 请求
         // 先注册消息回调通知, 然后再发送消息
-        if let Some(id) = &req.id {
+        if req.is_request() {
             let mut mg = self.id_map.lock().unwrap();
-            mg.insert(id.to_string(), tx);
+            mg.insert(req.id().to_string(), tx);
         }
 
         let data = serde_json::to_string(&req)?;
         if let Err(e) = self.write.send(Message::Text(data)).await {
-            error!("send message err: {:?}", e);
-
             // 删除消息回调通知
-            if let Some(id) = &req.id {
+            if req.is_request() {
                 let mut mg = self.id_map.lock().unwrap();
-                mg.remove(id);
+                mg.remove(req.id());
             }
+            return Err(Box::new(e));
         }
 
         // 发送成功, 如果是 rpc 请求, 那么需要等待响应
-        if let Some(id) = &req.id {
+        if req.is_request() {
             let res = rx.await?;
             Ok(Some(res))
         } else {
