@@ -75,6 +75,30 @@ pub struct Status {
     pub info_hash: String,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct GlobalStat {
+    /// Overall download speed (byte/sec).
+    #[serde(rename = "downloadSpeed")]
+    pub download_speed: String,
+    /// Overall upload speed(byte/sec).
+    #[serde(rename = "uploadSpeed")]
+    pub upload_speed: String,
+    /// The number of active downloads.
+    #[serde(rename = "numActive")]
+    pub num_active: String,
+    /// The number of waiting downloads.
+    #[serde(rename = "numWaiting")]
+    pub num_waiting: String,
+    /// The number of stopped downloads in the current session.
+    /// This value is capped by the --max-download-result option.
+    #[serde(rename = "numStopped")]
+    pub num_stopped: String,
+    /// The number of stopped downloads in the current session
+    /// and not capped by the --max-download-result option.
+    #[serde(rename = "numStoppedTotal")]
+    pub num_stopped_total: String,
+}
+
 #[derive(Serialize, Debug)]
 struct RequestObject {
     jsonrpc: &'static str,
@@ -366,6 +390,26 @@ impl Client {
             panic!("{}", MUST_RESULT)
         }
     }
+
+    pub async fn get_global_stat(
+        &mut self,
+        secret: Option<&str>,
+    ) -> Result<GlobalStat, Box<dyn Error>> {
+        let params_array = new_params(secret);
+        let params = JsonValue::Array(params_array);
+
+        let req = RequestObject::new(Method::GetGlobalStat, params, Some(self.next_id()));
+        let res = self.call(req).await?.expect(MUST_RESPONSE);
+
+        if let Some(result) = res.result {
+            let stat = serde_json::from_value::<GlobalStat>(result)?;
+            Ok(stat)
+        } else if let Some(err) = res.error {
+            Err(Box::new(err))
+        } else {
+            panic!("{}", MUST_RESULT)
+        }
+    }
 }
 
 fn new_params(secret: Option<&str>) -> Vec<serde_json::Value> {
@@ -507,6 +551,26 @@ mod test {
 
         let secret = env::var("ARIA2_SECRET").unwrap();
         let res = client.remove(Some(&secret), "2089b05ecca3d829").await;
+        match res {
+            Ok(gid) => {
+                info!("gid: {:?}", gid);
+            }
+            Err(e) => {
+                error!("err: {:?}", e)
+            }
+        }
+
+        sleep(Duration::from_secs(500)).await;
+    }
+
+    #[tokio::test]
+    async fn test_get_global_stat() {
+        setup();
+
+        let mut client = new_client().await;
+
+        let secret = env::var("ARIA2_SECRET").unwrap();
+        let res = client.get_global_stat(Some(&secret)).await;
         match res {
             Ok(gid) => {
                 info!("gid: {:?}", gid);
