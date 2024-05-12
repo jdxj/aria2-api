@@ -1,6 +1,6 @@
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -127,8 +127,10 @@ async fn read_message(
     trace!("start read message");
 
     while let Some(message) = reader.next().await {
+        // todo: 发生网络, 直接 panic 不太好?
         let message = message.unwrap();
         if let Message::Text(data) = message {
+            // todo: 解析错误, 直接 panic 不太好?
             let result = serde_json::from_str::<ResponseObject>(&data).unwrap();
             // todo: 可能是通知, 没有 id
             let id = &result.id;
@@ -137,7 +139,7 @@ async fn read_message(
                 Some(id) => {
                     let tx = {
                         let mut mg = id_map.lock().unwrap();
-                        mg.remove(id).unwrap()
+                        mg.remove(id).expect("oneshot sender not found")
                     };
                     if let Err(e) = tx.send(result) {
                         error!("send ResponseObject err: {:?}", e);
@@ -146,7 +148,7 @@ async fn read_message(
                 // 服务端发来的通知
                 _ => {
                     // todo: 发送到 channel
-                    info!("通知未发送到 channel: {:?}", result)
+                    warn!("通知未发送到 channel: {:?}", result)
                 }
             }
         }
@@ -189,7 +191,7 @@ impl Client {
         let mut params_array = Vec::new();
         if let Some(sec) = secret {
             let token = "token:".to_string() + sec;
-            params_array.push(token)
+            params_array.push(token);
         }
 
         let params = serde_json::json!(params_array);
@@ -205,6 +207,39 @@ impl Client {
             Err(Box::new(err))
         } else {
             panic!("neither result nor err")
+        }
+    }
+
+    pub async fn add_uri(
+        &mut self,
+        secret: Option<&str>,
+        uri: &str,
+    ) -> Result<String, Box<dyn Error>> {
+        let mut params_array = Vec::new();
+        // 添加 token
+        if let Some(sec) = secret {
+            let token = "token:".to_string() + sec;
+            params_array.push(serde_json::Value::String(token));
+        }
+        // 添加 uri, 目前每次只添加一个 uri
+        let mut uris = Vec::new();
+        uris.push(serde_json::Value::String(uri.to_string()));
+        let uris = serde_json::Value::Array(uris);
+        params_array.push(uris);
+
+        let params = serde_json::json!(params_array);
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
+        let req = RequestObject::new(Method::AddUri, params, Some(id));
+        let res = self.call(req).await?.expect("request must had response");
+
+        // 解析响应结果
+        if let Some(result) = res.result {
+            let gid = serde_json::from_value::<String>(result)?;
+            Ok(gid)
+        } else if let Some(err) = res.error {
+            Err(Box::new(err))
+        } else {
+            panic!("neither string nor err")
         }
     }
 }
@@ -281,5 +316,26 @@ mod test {
                 error!("err: {:?}", e)
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_add_uri() {
+        setup();
+
+        let mut client = new_client().await;
+
+        let secret = env::var("ARIA2_SECRET").unwrap();
+        let uri = "https://github.com/sxyazi/yazi/releases/download/v0.2.5/yazi-x86_64-unknown-linux-gnu.zip";
+        let res = client.add_uri(Some(&secret), uri).await;
+        match res {
+            Ok(gid) => {
+                info!("gid: {:?}", gid);
+            }
+            Err(e) => {
+                error!("err: {:?}", e)
+            }
+        }
+
+        sleep(Duration::from_secs(500)).await;
     }
 }
