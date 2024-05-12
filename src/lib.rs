@@ -48,6 +48,33 @@ pub struct Version {
     pub enabled_features: Vec<String>,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct Status {
+    pub gid: String,
+    /// active, waiting, paused, error, complete, removed
+    pub status: String,
+    /// Total length of the download in bytes.
+    #[serde(rename = "totalLength")]
+    pub total_length: String,
+    /// Completed length of the download in bytes.
+    #[serde(rename = "completedLength")]
+    pub completed_length: String,
+    /// Uploaded length of the download in bytes.
+    #[serde(rename = "uploadLength")]
+    pub upload_length: String,
+    /// Uploaded length of the download in bytes.
+    pub bitfield: String,
+    /// Download speed of this download measured in bytes/sec.
+    #[serde(rename = "downloadSpeed")]
+    pub download_speed: String,
+    /// Upload speed of this download measured in bytes/sec.
+    #[serde(rename = "uploadSpeed")]
+    pub upload_speed: String,
+    /// InfoHash. BitTorrent only.
+    #[serde(rename = "infoHash")]
+    pub info_hash: String,
+}
+
 #[derive(Serialize, Debug)]
 struct RequestObject {
     jsonrpc: &'static str,
@@ -316,6 +343,28 @@ impl Client {
         let res = self.call(req).await?.expect(MUST_RESPONSE);
 
         unwrap_result_for_string(res)
+    }
+
+    pub async fn tell_status(
+        &mut self,
+        secret: Option<&str>,
+        gid: &str,
+    ) -> Result<Status, Box<dyn Error>> {
+        let mut params_array = new_params(secret);
+        params_array.push(JsonValue::String(gid.to_string()));
+        let params = JsonValue::Array(params_array);
+
+        let req = RequestObject::new(Method::TellStatus, params, Some(self.next_id()));
+        let res = self.call(req).await?.expect(MUST_RESPONSE);
+
+        if let Some(result) = res.result {
+            let status = serde_json::from_value::<Status>(result)?;
+            Ok(status)
+        } else if let Some(err) = res.error {
+            Err(Box::new(err))
+        } else {
+            panic!("{}", MUST_RESULT)
+        }
     }
 }
 
