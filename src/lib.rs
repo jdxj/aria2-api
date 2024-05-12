@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::error::Error;
-use std::sync::atomic::AtomicU64;
+use std::fmt::{Display, Formatter};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use strum::IntoStaticStr;
 use tokio::net::TcpStream;
@@ -16,11 +17,11 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 #[derive(IntoStaticStr)]
 pub enum Method {
     #[strum(serialize = "aria2.addUri")]
-    Aria2AddUri,
+    AddUri,
     #[strum(serialize = "aria2.getVersion")]
-    Aria2GetVersion,
+    GetVersion,
     #[strum(serialize = "aria2.saveSession")]
-    Aria2SaveSession,
+    SaveSession,
 }
 
 #[derive(Deserialize, Debug)]
@@ -64,7 +65,7 @@ impl RequestObject {
 
 #[derive(Deserialize, Debug)]
 pub struct ResponseObject {
-    result: JsonValue,
+    result: Option<JsonValue>,
     error: Option<ErrorObject>,
 
     jsonrpc: String,
@@ -77,6 +78,18 @@ pub struct ErrorObject {
     pub message: Option<String>,
     pub data: Option<String>,
 }
+
+impl Display for ErrorObject {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "code: {}, message: {:?}, data: {:?}",
+            self.code, self.message, self.data
+        )
+    }
+}
+
+impl Error for ErrorObject {}
 
 pub struct Client {
     next_id: AtomicU64,
@@ -171,6 +184,29 @@ impl Client {
             Ok(None)
         }
     }
+
+    pub async fn get_version(&mut self, secret: Option<&str>) -> Result<Version, Box<dyn Error>> {
+        let mut params_array = Vec::new();
+        if let Some(sec) = secret {
+            let token = "token:".to_string() + sec;
+            params_array.push(token)
+        }
+
+        let params = serde_json::json!(params_array);
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
+        let req = RequestObject::new(Method::GetVersion, params, Some(id));
+        let res = self.call(req).await?.expect("request must had response");
+
+        // 解析响应结果
+        if let Some(result) = res.result {
+            let version = serde_json::from_value::<Version>(result)?;
+            Ok(version)
+        } else if let Some(err) = res.error {
+            Err(Box::new(err))
+        } else {
+            panic!("neither result nor err")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -194,7 +230,7 @@ mod test {
 
     #[test]
     fn test_enum() {
-        println!("{:?}", <Method as Into<&str>>::into(Method::Aria2AddUri))
+        println!("{:?}", <Method as Into<&str>>::into(Method::AddUri))
     }
 
     #[tokio::test]
@@ -214,7 +250,7 @@ mod test {
 
         let id = Some("1".to_string());
 
-        RequestObject::new(Method::Aria2GetVersion, params, id)
+        RequestObject::new(Method::GetVersion, params, id)
     }
 
     #[tokio::test]
@@ -225,7 +261,25 @@ mod test {
         let req = new_request_object();
         let res = client.call(req).await.unwrap().unwrap();
 
-        let version = serde_json::from_value::<Version>(res.result).unwrap();
+        let version = serde_json::from_value::<Version>(res.result.unwrap()).unwrap();
         println!("version: {:?}", version)
+    }
+
+    #[tokio::test]
+    async fn test_get_version() {
+        setup();
+
+        let mut client = new_client().await;
+
+        let secret = env::var("ARIA2_SECRET").unwrap();
+        let res = client.get_version(Some(&secret)).await;
+        match res {
+            Ok(version) => {
+                println!("version: {:?}", version)
+            }
+            Err(e) => {
+                error!("err: {:?}", e)
+            }
+        }
     }
 }
