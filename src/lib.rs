@@ -40,7 +40,7 @@ pub enum Method {
     PurgeDownloadResult,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Version {
     pub version: String,
     #[serde(rename = "enabledFeatures")]
@@ -59,7 +59,7 @@ impl Display for Version {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Status {
     pub gid: String,
     /// active, waiting, paused, error, complete, removed
@@ -113,7 +113,7 @@ impl Display for Status {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct GlobalStat {
     /// Overall download speed (byte/sec).
     #[serde(rename = "downloadSpeed")]
@@ -524,7 +524,6 @@ mod test {
     use log::debug;
     use std::env;
     use std::time::Duration;
-    use tokio::sync::oneshot;
     use tokio::time::sleep;
 
     fn setup() {
@@ -544,32 +543,11 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_new_client() {
-        setup();
-
-        let client = new_client().await;
-        sleep(Duration::from_secs(10)).await;
-    }
-
-    fn new_request_object() -> RequestObject {
-        let secret = env::var("ARIA2_SECRET").unwrap();
-        let token = "token:".to_string() + &secret;
-        let mut params_array = Vec::new();
-        params_array.push(token);
-        let params = serde_json::json!(params_array);
-
-        let id = Some("1".to_string());
-
-        RequestObject::new(Method::GetVersion, params, id)
-    }
-
-    #[tokio::test]
     async fn test_get_version() {
         setup();
 
-        let mut client = new_client().await;
+        let client = new_client().await;
 
-        let secret = env::var("ARIA2_SECRET").unwrap();
         let res = client.get_version().await;
         match res {
             Ok(version) => {
@@ -585,7 +563,7 @@ mod test {
     async fn test_add_uri() {
         setup();
 
-        let mut client = new_client().await;
+        let client = new_client().await;
 
         // 打印通知
         let mut notification = client.notification_receiver();
@@ -621,9 +599,8 @@ mod test {
     async fn test_remove() {
         setup();
 
-        let mut client = new_client().await;
+        let client = new_client().await;
 
-        let secret = env::var("ARIA2_SECRET").unwrap();
         let res = client.remove("2089b05ecca3d829").await;
         match res {
             Ok(gid) => {
@@ -641,9 +618,8 @@ mod test {
     async fn test_get_global_stat() {
         setup();
 
-        let mut client = new_client().await;
+        let client = new_client().await;
 
-        let secret = env::var("ARIA2_SECRET").unwrap();
         let res = client.get_global_stat().await;
         match res {
             Ok(gid) => {
@@ -661,9 +637,8 @@ mod test {
     async fn test_purge_download_result() {
         setup();
 
-        let mut client = new_client().await;
+        let client = new_client().await;
 
-        let secret = env::var("ARIA2_SECRET").unwrap();
         let res = client.purge_download_result().await;
         match res {
             Ok(result) => {
