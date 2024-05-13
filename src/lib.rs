@@ -10,8 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use strum::IntoStaticStr;
 use tokio::net::TcpStream;
-use tokio::sync::broadcast;
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::{self, Duration};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
@@ -171,42 +170,43 @@ impl Display for ErrorObject {
 
 impl Error for ErrorObject {}
 
+#[derive(Clone)]
 pub struct Client {
     secret: Option<String>,
-    next_id: AtomicU64,
-    write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    next_id: Arc<AtomicU64>,
     id_map: Arc<Mutex<HashMap<String, oneshot::Sender<ResponseObject>>>>,
     notify_tx: broadcast::Sender<ResponseObject>,
+    message_tx: mpsc::Sender<(RequestObject, oneshot::Sender<ResponseObject>)>,
 }
 
 impl Client {
     pub async fn new(url: &str, secret: Option<&str>) -> Self {
         // 连接 ws 服务
         let (ws_stream, resp) = connect_async(url).await.unwrap();
-        trace!("websocket response header: {:?}", resp.headers());
+        debug!("connect async response header: {:?}", resp.headers());
 
         // split stream
         let (write, read) = ws_stream.split();
+        // id -> 消息回调通知
         let id_map = Arc::new(Mutex::new(
             HashMap::<String, oneshot::Sender<ResponseObject>>::new(),
         ));
 
         // notification channel
         let (notify_tx, _) = broadcast::channel(100);
+        // write/read message channel
+        let (message_tx, message_rx) = mpsc::channel(100);
+        // read_message 在收到 notification 后会发送到 notify_tx
         tokio::spawn(read_message(read, id_map.clone(), notify_tx.clone()));
-
-        let secret = if let Some(value) = secret {
-            Some(value.to_string())
-        } else {
-            None
-        };
+        // write_message 从 rx 中接收要发送的 RequestObject
+        tokio::spawn(write_message(write, id_map.clone(), message_rx));
 
         Client {
-            secret,
-            next_id: AtomicU64::new(1),
-            write,
+            secret: secret.map(|s| s.to_string()),
+            next_id: Arc::new(AtomicU64::new(1)),
             id_map,
             notify_tx,
+            message_tx,
         }
     }
 }
@@ -216,7 +216,7 @@ async fn read_message(
     id_map: Arc<Mutex<HashMap<String, oneshot::Sender<ResponseObject>>>>,
     notify_tx: broadcast::Sender<ResponseObject>,
 ) {
-    trace!("start read message");
+    info!("start read message");
 
     while let Some(message) = reader.next().await {
         // todo: 发生网络, 直接 panic 不太好?
@@ -251,37 +251,57 @@ async fn read_message(
             }
         }
     }
+
+    info!("end read message");
+}
+
+async fn write_message(
+    mut write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    id_map: Arc<Mutex<HashMap<String, oneshot::Sender<ResponseObject>>>>,
+    mut message_rx: mpsc::Receiver<(RequestObject, oneshot::Sender<ResponseObject>)>,
+) {
+    info!("start write message");
+
+    while let Some((req, res_tx)) = message_rx.recv().await {
+        // 有 id, 说明是 rpc 请求
+        // 先注册消息回调通知, 然后再发送消息
+        if req.is_request() {
+            let mut mg = id_map.lock().unwrap();
+            mg.insert(req.id().to_string(), res_tx);
+        }
+
+        let data = serde_json::to_string(&req).unwrap();
+        debug!("encode request object: {:?}", req);
+
+        if let Err(e) = write.send(Message::Text(data)).await {
+            // 发送失败删除消息回调通知
+            if req.is_request() {
+                let mut mg = id_map.lock().unwrap();
+                mg.remove(req.id());
+            }
+            error!("write message err: {:?}, message: {:?}", e, req);
+            break;
+        }
+    }
+
+    info!("end write messages")
 }
 
 impl Client {
     async fn call(&mut self, req: RequestObject) -> Result<Option<ResponseObject>, Box<dyn Error>> {
+        let is_request = req.is_request();
+        let id = req.id.clone();
         let (tx, rx) = oneshot::channel();
-        // 有 id, 说明是 rpc 请求
-        // 先注册消息回调通知, 然后再发送消息
-        if req.is_request() {
-            let mut mg = self.id_map.lock().unwrap();
-            mg.insert(req.id().to_string(), tx);
-        }
 
-        let data = serde_json::to_string(&req)?;
-        debug!("encode request object: {:?}", data);
-
-        if let Err(e) = self.write.send(Message::Text(data)).await {
-            // 删除消息回调通知
-            if req.is_request() {
-                let mut mg = self.id_map.lock().unwrap();
-                mg.remove(req.id());
-            }
-            return Err(Box::new(e));
-        }
+        self.message_tx.send((req, tx)).await?;
 
         // 发送成功, 如果是 rpc 请求, 那么需要等待响应
-        if req.is_request() {
+        if is_request {
             match time::timeout(Duration::from_secs(10), rx).await {
                 Err(e) => {
                     // 超时, 删除消息回调通知
                     let mut mg = self.id_map.lock().unwrap();
-                    mg.remove(req.id());
+                    mg.remove(&id.unwrap());
                     Err(Box::new(e))
                 }
                 Ok(result) => {
