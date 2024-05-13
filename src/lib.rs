@@ -47,6 +47,18 @@ pub struct Version {
     pub enabled_features: Vec<String>,
 }
 
+impl Display for Version {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            r"Version:
+  version: {}
+  enabled features: {:?}",
+            self.version, self.enabled_features
+        )
+    }
+}
+
 #[derive(Deserialize, Debug)]
 pub struct Status {
     pub gid: String,
@@ -61,7 +73,7 @@ pub struct Status {
     /// Uploaded length of the download in bytes.
     #[serde(rename = "uploadLength")]
     pub upload_length: String,
-    /// Uploaded length of the download in bytes.
+    /// Hexadecimal representation of the download progress.
     pub bitfield: String,
     /// Download speed of this download measured in bytes/sec.
     #[serde(rename = "downloadSpeed")]
@@ -72,6 +84,33 @@ pub struct Status {
     /// InfoHash. BitTorrent only.
     #[serde(rename = "infoHash")]
     pub info_hash: String,
+}
+
+impl Display for Status {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            r"Status:
+  gid: {}
+  status: {}
+  total length: {}bytes
+  completed length: {}bytes
+  upload length: {}bytes
+  bitfield: {}
+  download speed: {}bytes/sec
+  upload speed: {}bytes/sec
+  info_hash: {}",
+            self.gid,
+            self.status,
+            self.total_length,
+            self.completed_length,
+            self.upload_length,
+            self.bitfield,
+            self.download_speed,
+            self.upload_speed,
+            self.info_hash,
+        )
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -96,6 +135,28 @@ pub struct GlobalStat {
     /// and not capped by the --max-download-result option.
     #[serde(rename = "numStoppedTotal")]
     pub num_stopped_total: String,
+}
+
+impl Display for GlobalStat {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            r"Global Stat:
+  download speed: {}bytes/sec
+  upload speed: {}/bytes/sec
+  num active: {}
+  num waiting: {}
+  num stopped: {}
+  num stopped total: {}
+",
+            self.download_speed,
+            self.upload_speed,
+            self.num_active,
+            self.num_waiting,
+            self.num_stopped,
+            self.num_stopped_total,
+        )
+    }
 }
 
 #[derive(Serialize, Debug)]
@@ -626,5 +687,40 @@ mod test {
         }
 
         sleep(Duration::from_secs(500)).await;
+    }
+
+    #[test]
+    fn test_format() {
+        let v = Status {
+            gid: "abc".to_string(),
+            status: "def".to_string(),
+            total_length: "1".to_string(),
+            completed_length: "2".to_string(),
+            upload_length: "3".to_string(),
+            bitfield: "ghi".to_string(),
+            download_speed: "4".to_string(),
+            upload_speed: "5".to_string(),
+            info_hash: "jkl".to_string(),
+        };
+        println!("{}", v);
+
+        let mut ef = Vec::new();
+        ef.push("abc".to_string());
+
+        let v = Version {
+            version: "v0.1.0".to_string(),
+            enabled_features: ef,
+        };
+        println!("{}", v);
+
+        let v = GlobalStat {
+            download_speed: "1".to_string(),
+            upload_speed: "2".to_string(),
+            num_active: "3".to_string(),
+            num_waiting: "4".to_string(),
+            num_stopped: "5".to_string(),
+            num_stopped_total: "6".to_string(),
+        };
+        println!("{}", v);
     }
 }
