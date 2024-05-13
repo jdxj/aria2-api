@@ -142,6 +142,16 @@ pub struct ResponseObject {
     params: Option<serde_json::Value>,
 }
 
+impl Display for ResponseObject {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "result: {:?}\nerror: {:?}\njsonrpc: {:?}\nid: {:?}\nmethod: {:?}\nparams: {:?}",
+            &self.result, &self.error, &self.jsonrpc, &self.id, &self.method, &self.params
+        )
+    }
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct ErrorObject {
     pub code: i16,
