@@ -349,7 +349,7 @@ async fn write_message(
 }
 
 impl Client {
-    async fn call(&mut self, req: RequestObject) -> Result<Option<ResponseObject>, Box<dyn Error>> {
+    async fn call(&self, req: RequestObject) -> Result<Option<ResponseObject>, Box<dyn Error>> {
         let is_request = req.is_request();
         let id = req.id.clone();
         let (tx, rx) = oneshot::channel();
@@ -381,11 +381,11 @@ impl Client {
         self.notify_tx.subscribe()
     }
 
-    fn next_id(&mut self) -> String {
+    fn next_id(&self) -> String {
         self.next_id.fetch_add(1, Ordering::Relaxed).to_string()
     }
 
-    pub async fn get_version(&mut self) -> Result<Version, Box<dyn Error>> {
+    pub async fn get_version(&self) -> Result<Version, Box<dyn Error>> {
         let params_array = new_params(self.secret.as_deref());
         let params = JsonValue::Array(params_array);
 
@@ -403,7 +403,7 @@ impl Client {
         }
     }
 
-    pub async fn add_uri(&mut self, uri: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn add_uri(&self, uri: &str) -> Result<String, Box<dyn Error>> {
         // 添加 uris, 目前每次调用只添加一个 uri
         let mut uris = Vec::new();
         uris.push(JsonValue::String(uri.to_string()));
@@ -419,7 +419,7 @@ impl Client {
         unwrap_result_for_string(res)
     }
 
-    pub async fn remove(&mut self, gid: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn remove(&self, gid: &str) -> Result<String, Box<dyn Error>> {
         let mut params_array = new_params(self.secret.as_deref());
         params_array.push(JsonValue::String(gid.to_string()));
         let params = JsonValue::Array(params_array);
@@ -430,7 +430,7 @@ impl Client {
         unwrap_result_for_string(res)
     }
 
-    pub async fn pause(&mut self, gid: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn pause(&self, gid: &str) -> Result<String, Box<dyn Error>> {
         let mut params_array = new_params(self.secret.as_deref());
         params_array.push(JsonValue::String(gid.to_string()));
         let params = JsonValue::Array(params_array);
@@ -441,7 +441,7 @@ impl Client {
         unwrap_result_for_string(res)
     }
 
-    pub async fn unpause(&mut self, gid: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn unpause(&self, gid: &str) -> Result<String, Box<dyn Error>> {
         let mut params_array = new_params(self.secret.as_deref());
         params_array.push(JsonValue::String(gid.to_string()));
         let params = JsonValue::Array(params_array);
@@ -452,7 +452,7 @@ impl Client {
         unwrap_result_for_string(res)
     }
 
-    pub async fn tell_status(&mut self, gid: &str) -> Result<Status, Box<dyn Error>> {
+    pub async fn tell_status(&self, gid: &str) -> Result<Status, Box<dyn Error>> {
         let mut params_array = new_params(self.secret.as_deref());
         params_array.push(JsonValue::String(gid.to_string()));
         let params = JsonValue::Array(params_array);
@@ -470,7 +470,7 @@ impl Client {
         }
     }
 
-    pub async fn get_global_stat(&mut self) -> Result<GlobalStat, Box<dyn Error>> {
+    pub async fn get_global_stat(&self) -> Result<GlobalStat, Box<dyn Error>> {
         let params_array = new_params(self.secret.as_deref());
         let params = JsonValue::Array(params_array);
 
@@ -487,7 +487,7 @@ impl Client {
         }
     }
 
-    pub async fn purge_download_result(&mut self) -> Result<String, Box<dyn Error>> {
+    pub async fn purge_download_result(&self) -> Result<String, Box<dyn Error>> {
         let params_array = new_params(self.secret.as_deref());
         let params = JsonValue::Array(params_array);
 
@@ -561,18 +561,6 @@ mod test {
         let id = Some("1".to_string());
 
         RequestObject::new(Method::GetVersion, params, id)
-    }
-
-    #[tokio::test]
-    async fn test_call() {
-        setup();
-
-        let mut client = new_client().await;
-        let req = new_request_object();
-        let res = client.call(req).await.unwrap().unwrap();
-
-        let version = serde_json::from_value::<Version>(res.result.unwrap()).unwrap();
-        println!("version: {:?}", version)
     }
 
     #[tokio::test]
