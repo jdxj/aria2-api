@@ -162,6 +162,7 @@ impl Display for ErrorObject {
 impl Error for ErrorObject {}
 
 pub struct Client {
+    secret: Option<String>,
     next_id: AtomicU64,
     write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
     id_map: Arc<Mutex<HashMap<String, oneshot::Sender<ResponseObject>>>>,
@@ -169,7 +170,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn new(url: &str) -> Self {
+    pub async fn new(url: &str, secret: Option<&str>) -> Self {
         // 连接 ws 服务
         let (ws_stream, resp) = connect_async(url).await.unwrap();
         trace!("websocket response header: {:?}", resp.headers());
@@ -184,7 +185,14 @@ impl Client {
         let (notify_tx, _) = broadcast::channel(100);
         tokio::spawn(read_message(read, id_map.clone(), notify_tx.clone()));
 
+        let secret = if let Some(value) = secret {
+            Some(value.to_string())
+        } else {
+            None
+        };
+
         Client {
+            secret,
             next_id: AtomicU64::new(1),
             write,
             id_map,
@@ -286,8 +294,8 @@ impl Client {
         self.next_id.fetch_add(1, Ordering::Relaxed).to_string()
     }
 
-    pub async fn get_version(&mut self, secret: Option<&str>) -> Result<Version, Box<dyn Error>> {
-        let params_array = new_params(secret);
+    pub async fn get_version(&mut self) -> Result<Version, Box<dyn Error>> {
+        let params_array = new_params(self.secret.as_deref());
         let params = JsonValue::Array(params_array);
 
         let req = RequestObject::new(Method::GetVersion, params, Some(self.next_id()));
@@ -304,16 +312,12 @@ impl Client {
         }
     }
 
-    pub async fn add_uri(
-        &mut self,
-        secret: Option<&str>,
-        uri: &str,
-    ) -> Result<String, Box<dyn Error>> {
+    pub async fn add_uri(&mut self, uri: &str) -> Result<String, Box<dyn Error>> {
         // 添加 uris, 目前每次调用只添加一个 uri
         let mut uris = Vec::new();
         uris.push(JsonValue::String(uri.to_string()));
         // 添加 token
-        let mut params_array = new_params(secret);
+        let mut params_array = new_params(self.secret.as_deref());
         params_array.push(JsonValue::Array(uris));
         let params = JsonValue::Array(params_array);
 
@@ -324,12 +328,8 @@ impl Client {
         unwrap_result_for_string(res)
     }
 
-    pub async fn remove(
-        &mut self,
-        secret: Option<&str>,
-        gid: &str,
-    ) -> Result<String, Box<dyn Error>> {
-        let mut params_array = new_params(secret);
+    pub async fn remove(&mut self, gid: &str) -> Result<String, Box<dyn Error>> {
+        let mut params_array = new_params(self.secret.as_deref());
         params_array.push(JsonValue::String(gid.to_string()));
         let params = JsonValue::Array(params_array);
 
@@ -339,12 +339,8 @@ impl Client {
         unwrap_result_for_string(res)
     }
 
-    pub async fn pause(
-        &mut self,
-        secret: Option<&str>,
-        gid: &str,
-    ) -> Result<String, Box<dyn Error>> {
-        let mut params_array = new_params(secret);
+    pub async fn pause(&mut self, gid: &str) -> Result<String, Box<dyn Error>> {
+        let mut params_array = new_params(self.secret.as_deref());
         params_array.push(JsonValue::String(gid.to_string()));
         let params = JsonValue::Array(params_array);
 
@@ -354,12 +350,8 @@ impl Client {
         unwrap_result_for_string(res)
     }
 
-    pub async fn unpause(
-        &mut self,
-        secret: Option<&str>,
-        gid: &str,
-    ) -> Result<String, Box<dyn Error>> {
-        let mut params_array = new_params(secret);
+    pub async fn unpause(&mut self, gid: &str) -> Result<String, Box<dyn Error>> {
+        let mut params_array = new_params(self.secret.as_deref());
         params_array.push(JsonValue::String(gid.to_string()));
         let params = JsonValue::Array(params_array);
 
@@ -369,12 +361,8 @@ impl Client {
         unwrap_result_for_string(res)
     }
 
-    pub async fn tell_status(
-        &mut self,
-        secret: Option<&str>,
-        gid: &str,
-    ) -> Result<Status, Box<dyn Error>> {
-        let mut params_array = new_params(secret);
+    pub async fn tell_status(&mut self, gid: &str) -> Result<Status, Box<dyn Error>> {
+        let mut params_array = new_params(self.secret.as_deref());
         params_array.push(JsonValue::String(gid.to_string()));
         let params = JsonValue::Array(params_array);
 
@@ -391,11 +379,8 @@ impl Client {
         }
     }
 
-    pub async fn get_global_stat(
-        &mut self,
-        secret: Option<&str>,
-    ) -> Result<GlobalStat, Box<dyn Error>> {
-        let params_array = new_params(secret);
+    pub async fn get_global_stat(&mut self) -> Result<GlobalStat, Box<dyn Error>> {
+        let params_array = new_params(self.secret.as_deref());
         let params = JsonValue::Array(params_array);
 
         let req = RequestObject::new(Method::GetGlobalStat, params, Some(self.next_id()));
@@ -411,11 +396,8 @@ impl Client {
         }
     }
 
-    pub async fn purge_download_result(
-        &mut self,
-        secret: Option<&str>,
-    ) -> Result<String, Box<dyn Error>> {
-        let params_array = new_params(secret);
+    pub async fn purge_download_result(&mut self) -> Result<String, Box<dyn Error>> {
+        let params_array = new_params(self.secret.as_deref());
         let params = JsonValue::Array(params_array);
 
         let req = RequestObject::new(Method::PurgeDownloadResult, params, Some(self.next_id()));
@@ -461,7 +443,8 @@ mod test {
     }
 
     async fn new_client() -> Client {
-        Client::new("ws://172.18.2.11:6800/jsonrpc").await
+        let secret = env::var("ARIA2_SECRET").unwrap();
+        Client::new("ws://172.18.2.11:6800/jsonrpc", Some(&secret)).await
     }
 
     #[test]
@@ -508,7 +491,7 @@ mod test {
         let mut client = new_client().await;
 
         let secret = env::var("ARIA2_SECRET").unwrap();
-        let res = client.get_version(Some(&secret)).await;
+        let res = client.get_version().await;
         match res {
             Ok(version) => {
                 println!("version: {:?}", version)
@@ -541,9 +524,8 @@ mod test {
         });
 
         // 添加下载请求
-        let secret = env::var("ARIA2_SECRET").unwrap();
         let uri = "https://github.com/sxyazi/yazi/releases/download/v0.2.5/yazi-x86_64-unknown-linux-gnu.zip";
-        let res = client.add_uri(Some(&secret), uri).await;
+        let res = client.add_uri(uri).await;
         match res {
             Ok(gid) => {
                 info!("gid: {:?}", gid);
@@ -563,7 +545,7 @@ mod test {
         let mut client = new_client().await;
 
         let secret = env::var("ARIA2_SECRET").unwrap();
-        let res = client.remove(Some(&secret), "2089b05ecca3d829").await;
+        let res = client.remove("2089b05ecca3d829").await;
         match res {
             Ok(gid) => {
                 info!("gid: {:?}", gid);
@@ -583,7 +565,7 @@ mod test {
         let mut client = new_client().await;
 
         let secret = env::var("ARIA2_SECRET").unwrap();
-        let res = client.get_global_stat(Some(&secret)).await;
+        let res = client.get_global_stat().await;
         match res {
             Ok(gid) => {
                 info!("gid: {:?}", gid);
@@ -603,7 +585,7 @@ mod test {
         let mut client = new_client().await;
 
         let secret = env::var("ARIA2_SECRET").unwrap();
-        let res = client.purge_download_result(Some(&secret)).await;
+        let res = client.purge_download_result().await;
         match res {
             Ok(result) => {
                 info!("result: {:?}", result);
