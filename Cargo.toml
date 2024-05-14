@@ -14,3 +14,4 @@ strum = { version = "0.26", features = ["derive"] }
 log = "0.4"
 pretty_env_logger = "0.5"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+anyhow = "1.0"

@@ -1,10 +1,10 @@
+use anyhow::{anyhow, Result};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, error, info, trace, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
-use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -229,7 +229,7 @@ impl Display for ErrorObject {
     }
 }
 
-impl Error for ErrorObject {}
+impl std::error::Error for ErrorObject {}
 
 #[derive(Clone)]
 pub struct Client {
@@ -349,7 +349,7 @@ async fn write_message(
 }
 
 impl Client {
-    async fn call(&self, req: RequestObject) -> Result<Option<ResponseObject>, Box<dyn Error>> {
+    async fn call(&self, req: RequestObject) -> Result<Option<ResponseObject>> {
         let is_request = req.is_request();
         let id = req.id.clone();
         let (tx, rx) = oneshot::channel();
@@ -363,7 +363,7 @@ impl Client {
                     // 超时, 删除消息回调通知
                     let mut mg = self.id_map.lock().unwrap();
                     mg.remove(&id.unwrap());
-                    Err(Box::new(e))
+                    Err(anyhow!(e))
                 }
                 Ok(result) => {
                     let res = result?;
@@ -385,7 +385,7 @@ impl Client {
         self.next_id.fetch_add(1, Ordering::Relaxed).to_string()
     }
 
-    pub async fn get_version(&self) -> Result<Version, Box<dyn Error>> {
+    pub async fn get_version(&self) -> Result<Version> {
         let params_array = new_params(self.secret.as_deref());
         let params = JsonValue::Array(params_array);
 
@@ -396,14 +396,14 @@ impl Client {
         if let Some(result) = res.result {
             let version = serde_json::from_value::<Version>(result)?;
             Ok(version)
-        } else if let Some(err) = res.error {
-            Err(Box::new(err))
+        } else if let Some(e) = res.error {
+            Err(anyhow!(e))
         } else {
             panic!("{}", MUST_RESULT)
         }
     }
 
-    pub async fn add_uri(&self, uri: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn add_uri(&self, uri: &str) -> Result<String> {
         // 添加 uris, 目前每次调用只添加一个 uri
         let mut uris = Vec::new();
         uris.push(JsonValue::String(uri.to_string()));
@@ -419,7 +419,7 @@ impl Client {
         unwrap_result_for_string(res)
     }
 
-    pub async fn remove(&self, gid: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn remove(&self, gid: &str) -> Result<String> {
         let mut params_array = new_params(self.secret.as_deref());
         params_array.push(JsonValue::String(gid.to_string()));
         let params = JsonValue::Array(params_array);
@@ -430,7 +430,7 @@ impl Client {
         unwrap_result_for_string(res)
     }
 
-    pub async fn pause(&self, gid: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn pause(&self, gid: &str) -> Result<String> {
         let mut params_array = new_params(self.secret.as_deref());
         params_array.push(JsonValue::String(gid.to_string()));
         let params = JsonValue::Array(params_array);
@@ -441,7 +441,7 @@ impl Client {
         unwrap_result_for_string(res)
     }
 
-    pub async fn unpause(&self, gid: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn unpause(&self, gid: &str) -> Result<String> {
         let mut params_array = new_params(self.secret.as_deref());
         params_array.push(JsonValue::String(gid.to_string()));
         let params = JsonValue::Array(params_array);
@@ -452,7 +452,7 @@ impl Client {
         unwrap_result_for_string(res)
     }
 
-    pub async fn tell_status(&self, gid: &str) -> Result<Status, Box<dyn Error>> {
+    pub async fn tell_status(&self, gid: &str) -> Result<Status> {
         let mut params_array = new_params(self.secret.as_deref());
         params_array.push(JsonValue::String(gid.to_string()));
         let params = JsonValue::Array(params_array);
@@ -463,14 +463,14 @@ impl Client {
         if let Some(result) = res.result {
             let status = serde_json::from_value::<Status>(result)?;
             Ok(status)
-        } else if let Some(err) = res.error {
-            Err(Box::new(err))
+        } else if let Some(e) = res.error {
+            Err(anyhow!(e))
         } else {
             panic!("{}", MUST_RESULT)
         }
     }
 
-    pub async fn get_global_stat(&self) -> Result<GlobalStat, Box<dyn Error>> {
+    pub async fn get_global_stat(&self) -> Result<GlobalStat> {
         let params_array = new_params(self.secret.as_deref());
         let params = JsonValue::Array(params_array);
 
@@ -480,14 +480,14 @@ impl Client {
         if let Some(result) = res.result {
             let stat = serde_json::from_value::<GlobalStat>(result)?;
             Ok(stat)
-        } else if let Some(err) = res.error {
-            Err(Box::new(err))
+        } else if let Some(e) = res.error {
+            Err(anyhow!(e))
         } else {
             panic!("{}", MUST_RESULT)
         }
     }
 
-    pub async fn purge_download_result(&self) -> Result<String, Box<dyn Error>> {
+    pub async fn purge_download_result(&self) -> Result<String> {
         let params_array = new_params(self.secret.as_deref());
         let params = JsonValue::Array(params_array);
 
@@ -507,12 +507,12 @@ fn new_params(secret: Option<&str>) -> Vec<serde_json::Value> {
     params_array
 }
 
-fn unwrap_result_for_string(res: ResponseObject) -> Result<String, Box<dyn Error>> {
+fn unwrap_result_for_string(res: ResponseObject) -> Result<String> {
     if let Some(result) = res.result {
         let gid = serde_json::from_value::<String>(result)?;
         Ok(gid)
-    } else if let Some(err) = res.error {
-        Err(Box::new(err))
+    } else if let Some(e) = res.error {
+        Err(anyhow!(e))
     } else {
         panic!("{}", MUST_RESULT)
     }
